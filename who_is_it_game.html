@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Mini Game A: Who is it?</title>
+    
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- React & ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Canvas Confetti -->
+    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600&display=swap');
+        
+        body, html { 
+            font-family: 'Fredoka', sans-serif; 
+            background-color: #f0fdf4;
+            -webkit-tap-highlight-color: transparent;
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            overflow: hidden; /* Prevent scrolling entirely */
+        }
+
+        /* Fun bounce animation for buttons */
+        .hover-bounce:hover {
+            animation: bounce 1s infinite;
+        }
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-5px); }
+        }
+
+        /* Pulse animation for the listening icon */
+        .pulse-ring {
+            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: .5; transform: scale(1.1); }
+        }
+        
+        /* Shake animation for wrong answers */
+        .shake {
+            animation: shake 0.4s cubic-bezier(.36,.07,.19,.97) both;
+        }
+        @keyframes shake {
+            10%, 90% { transform: translate3d(-2px, 0, 0); }
+            20%, 80% { transform: translate3d(4px, 0, 0); }
+            30%, 50%, 70% { transform: translate3d(-6px, 0, 0); }
+            40%, 60% { transform: translate3d(6px, 0, 0); }
+        }
+    </style>
+</head>
+<body class="text-gray-800 flex flex-col items-center justify-center p-2 sm:p-4">
+    <div id="root" class="w-full max-w-3xl h-full flex flex-col"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // --- Sound Synthesizers (Web Audio API) ---
+        const playCorrectSound = () => {
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContext) return;
+            const ctx = new AudioContext();
+            
+            // Play C5 then E5 (Duolingo style ding)
+            const playTone = (freq, startTime, duration) => {
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.type = 'sine';
+                osc.frequency.value = freq;
+                
+                gain.gain.setValueAtTime(0, startTime);
+                gain.gain.linearRampToValueAtTime(0.3, startTime + 0.05);
+                gain.gain.linearRampToValueAtTime(0, startTime + duration);
+                
+                osc.start(startTime);
+                osc.stop(startTime + duration);
+            };
+
+            playTone(523.25, ctx.currentTime, 0.15); // C5
+            playTone(659.25, ctx.currentTime + 0.1, 0.3); // E5
+        };
+
+        const playWrongSound = () => {
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContext) return;
+            const ctx = new AudioContext();
+            
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.type = 'sawtooth';
+            
+            // Low thump/buzzer
+            osc.frequency.setValueAtTime(150, ctx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(40, ctx.currentTime + 0.3);
+            
+            gain.gain.setValueAtTime(0, ctx.currentTime);
+            gain.gain.linearRampToValueAtTime(0.2, ctx.currentTime + 0.05);
+            gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.3);
+            
+            osc.start(ctx.currentTime);
+            osc.stop(ctx.currentTime + 0.3);
+        };
+
+        // --- Visual SVGs (Replacing Images) ---
+        const Graphics = {
+            Ball: ({ variant }) => {
+                const r = variant.size === 'big' ? 40 : 20;
+                const cy = variant.size === 'big' ? 50 : 75; // Adjust Y to ground the ball
+                return (
+                    <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
+                        <circle cx="50" cy={cy} r={r} fill={variant.color} stroke="#1f2937" strokeWidth="4" />
+                        <ellipse cx={50 - r/4} cy={cy - r/3} rx={r*0.375} ry={r*0.2} fill="white" opacity="0.4" transform={`rotate(-30 ${50 - r/4} ${cy - r/3})`} />
+                    </svg>
+                );
+            },
+            Girl: ({ variant }) => {
+                const scale = variant.height === 'tall' ? 1 : 0.65;
+                const hairColor = variant.hair === 'long' ? '#78350f' : '#d97706';
+                
+                return (
+                    <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
+                        <g style={{ transformOrigin: '50% 100%', transform: `scale(${scale})` }}>
+                            {/* Dress/Body */}
+                            <path d="M 35 55 L 65 55 L 80 100 L 20 100 Z" fill="#a855f7" stroke="#1f2937" strokeWidth="3" />
+                            {/* Hair Back */}
+                            {variant.hair === 'long' && <path d="M 20 30 Q 20 10 50 10 Q 80 10 80 30 L 85 70 L 15 70 Z" fill={hairColor} stroke="#1f2937" strokeWidth="3"/>}
+                            {variant.hair === 'short' && <path d="M 20 30 A 30 30 0 0 1 80 30 L 85 45 L 15 45 Z" fill={hairColor} stroke="#1f2937" strokeWidth="3"/>}
+                            {/* Face */}
+                            <circle cx="50" cy="35" r="25" fill="#ffedd5" stroke="#1f2937" strokeWidth="3"/>
+                            {/* Eyes */}
+                            <circle cx="40" cy="30" r="3" fill="#1f2937"/>
+                            <circle cx="60" cy="30" r="3" fill="#1f2937"/>
+                            {/* Smile */}
+                            <path d="M 42 42 Q 50 48 58 42" stroke="#1f2937" strokeWidth="2" fill="transparent"/>
+                        </g>
+                    </svg>
+                );
+            },
+            Boy: ({ variant }) => {
+                return (
+                    <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
+                        <g style={{ transformOrigin: '50% 100%' }}>
+                            {/* Shirt/Body */}
+                            <path d="M 35 60 L 65 60 L 75 100 L 25 100 Z" fill="#3b82f6" stroke="#1f2937" strokeWidth="3" />
+                            {/* Hair base */}
+                            <path d="M 25 40 A 25 25 0 0 1 75 40 Z" fill="#422006" />
+                            {/* Face */}
+                            <circle cx="50" cy="40" r="25" fill="#ffedd5" stroke="#1f2937" strokeWidth="3"/>
+                            {/* Eyes */}
+                            <circle cx="40" cy="35" r="3" fill="#1f2937"/>
+                            <circle cx="60" cy="35" r="3" fill="#1f2937"/>
+                            {/* Smile */}
+                            <path d="M 45 48 Q 50 52 55 48" stroke="#1f2937" strokeWidth="2" fill="transparent"/>
+                            {/* Cap */}
+                            {variant.cap !== 'none' && (
+                                <g>
+                                    <path d="M 20 30 C 20 0, 80 0, 80 30 Z" fill={variant.cap} stroke="#1f2937" strokeWidth="3"/>
+                                    <rect x="15" y="25" width="85" height="8" rx="4" fill={variant.cap} stroke="#1f2937" strokeWidth="3"/>
+                                </g>
+                            )}
+                        </g>
+                    </svg>
+                );
+            },
+            Cat: ({ variant }) => {
+                const scale = variant.size === 'big' ? 1 : 0.6;
+                return (
+                    <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
+                        <g style={{ transformOrigin: '50% 100%', transform: `scale(${scale})` }}>
+                            <polygon points="15,45 25,10 45,35" fill={variant.color} stroke="#1f2937" strokeWidth="3"/>
+                            <polygon points="85,45 75,10 55,35" fill={variant.color} stroke="#1f2937" strokeWidth="3"/>
+                            <circle cx="50" cy="60" r="35" fill={variant.color} stroke="#1f2937" strokeWidth="3"/>
+                            {/* Eyes */}
+                            <circle cx="35" cy="55" r="6" fill="white"/>
+                            <circle cx="65" cy="55" r="6" fill="white"/>
+                            <circle cx="35" cy="55" r="3" fill="black"/>
+                            <circle cx="65" cy="55" r="3" fill="black"/>
+                            {/* Nose */}
+                            <polygon points="47,65 53,65 50,70" fill="#f472b6"/>
+                            {/* Whiskers */}
+                            <path d="M 30 65 L 10 60 M 30 68 L 10 70 M 70 65 L 90 60 M 70 68 L 90 70" stroke="#1f2937" strokeWidth="2"/>
+                        </g>
+                    </svg>
+                );
+            }
+        };
+
+        // Game Configuration
+        const GAME_DATA = [
+            {
+                prompt: "It is big. It is green.",
+                type: "Ball",
+                options: [
+                    { color: "#ef4444", size: "small" }, 
+                    { color: "#22c55e", size: "big" },   // Correct
+                    { color: "#22c55e", size: "small" }, 
+                    { color: "#3b82f6", size: "big" }    
+                ],
+                correctIndex: 1 
+            },
+            {
+                prompt: "She is tall. She has long hair.",
+                type: "Girl",
+                options: [
+                    { hair: "short", height: "short" },
+                    { hair: "long", height: "tall" },    // Correct
+                    { hair: "long", height: "short" },
+                    { hair: "short", height: "tall" }
+                ],
+                correctIndex: 1 
+            },
+            {
+                prompt: "He is wearing a red cap.",
+                type: "Boy",
+                options: [
+                    { cap: "none" },
+                    { cap: "#ef4444" }, // Correct
+                    { cap: "#3b82f6" }, 
+                    { cap: "#eab308" }  
+                ],
+                correctIndex: 1 
+            },
+            {
+                prompt: "It is small. It is black.",
+                type: "Cat",
+                options: [
+                    { color: "#f97316", size: "big" },   
+                    { color: "#1f2937", size: "small" }, // Correct
+                    { color: "#1f2937", size: "big" },   
+                    { color: "#ffffff", size: "small" }  
+                ],
+                correctIndex: 1 
+            }
+        ];
+
+        // --- Audio Decoding Helpers (Unchanged) ---
+        function base64ToArrayBuffer(base64) {
+            const binaryString = window.atob(base64);
+            const len = binaryString.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) bytes[i] = binaryString.charCodeAt(i);
+            return bytes.buffer;
+        }
+
+        function pcmToWav(pcm16, sampleRate) {
+            const numChannels = 1;
+            const byteRate = sampleRate * numChannels * 2;
+            const buffer = new ArrayBuffer(44 + pcm16.length * 2);
+            const view = new DataView(buffer);
+            const writeString = (v, offset, string) => {
+                for (let i = 0; i < string.length; i++) v.setUint8(offset + i, string.charCodeAt(i));
+            };
+
+            writeString(view, 0, 'RIFF');
+            view.setUint32(4, 36 + pcm16.length * 2, true);
+            writeString(view, 8, 'WAVE');
+            writeString(view, 12, 'fmt ');
+            view.setUint32(16, 16, true);
+            view.setUint16(20, 1, true);
+            view.setUint16(22, numChannels, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, byteRate, true);
+            view.setUint16(32, numChannels * 2, true);
+            view.setUint16(34, 16, true);
+            writeString(view, 36, 'data');
+            view.setUint32(40, pcm16.length * 2, true);
+
+            let offset = 44;
+            for (let i = 0; i < pcm16.length; i++, offset += 2) view.setInt16(offset, pcm16[i], true);
+            return new Blob([view], { type: 'audio/wav' });
+        }
+
+        async function fetchTTSWithBackoff(text, retries = 3, delay = 1000) {
+            const apiKey = ""; // Canvas provides this securely
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${apiKey}`;
+            
+            const payload = {
+                contents: [{ parts: [{ text: "Read clearly and naturally for a listening test: " + text }] }],
+                generationConfig: {
+                    responseModalities: ["AUDIO"],
+                    speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } } }
+                },
+                model: "gemini-2.5-flash-preview-tts"
+            };
+
+            try {
+                const response = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                if (!response.ok) {
+                    if (response.status === 429 && retries > 0) {
+                        await new Promise(res => setTimeout(res, delay));
+                        return fetchTTSWithBackoff(text, retries - 1, delay * 2);
+                    }
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const result = await response.json();
+                const audioData = result?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+                const mimeType = result?.candidates?.[0]?.content?.parts?.[0]?.inlineData?.mimeType;
+
+                if (audioData) {
+                    let sampleRate = 24000;
+                    const match = mimeType?.match(/rate=(\d+)/);
+                    if (match) sampleRate = parseInt(match[1], 10);
+                    return URL.createObjectURL(pcmToWav(new Int16Array(base64ToArrayBuffer(audioData)), sampleRate));
+                }
+            } catch (err) {
+                if (retries > 0) {
+                    await new Promise(res => setTimeout(res, delay));
+                    return fetchTTSWithBackoff(text, retries - 1, delay * 2);
+                }
+            }
+            return null;
+        }
+
+        // --- UI Components ---
+        const App = () => {
+            const [gameState, setGameState] = useState('start'); // start, playing, gameover, won
+            const [currentQIndex, setCurrentQIndex] = useState(0);
+            const [lives, setLives] = useState(3);
+            const [wrongGuesses, setWrongGuesses] = useState([]);
+            
+            const [audioCache, setAudioCache] = useState({});
+            const [isAudioPlaying, setIsAudioPlaying] = useState(false);
+            const [isLoadingAudio, setIsLoadingAudio] = useState(false);
+            const [showSuccess, setShowSuccess] = useState(false);
+            
+            const currentAudioRef = useRef(null);
+
+            // Confetti effect when game is won
+            useEffect(() => {
+                if (gameState === 'won') {
+                    confetti({
+                        particleCount: 250,
+                        spread: 120,
+                        origin: { y: 0.6 },
+                        colors: ['#26ccff', '#a25afd', '#ff5e7e', '#88ff5a', '#fcff42', '#ffa62d', '#ff36ff']
+                    });
+                }
+            }, [gameState]);
+
+            const playAudio = async () => {
+                if (isAudioPlaying) return;
+                let url = audioCache[currentQIndex];
+                if (!url) {
+                    setIsLoadingAudio(true);
+                    url = await fetchTTSWithBackoff(GAME_DATA[currentQIndex].prompt);
+                    setIsLoadingAudio(false);
+                    if (url) setAudioCache(prev => ({...prev, [currentQIndex]: url}));
+                    else return; 
+                }
+                setIsAudioPlaying(true);
+                const audio = new Audio(url);
+                currentAudioRef.current = audio;
+                audio.onended = () => setIsAudioPlaying(false);
+                audio.play().catch(() => setIsAudioPlaying(false));
+            };
+
+            const handleStart = () => {
+                setGameState('playing');
+                setCurrentQIndex(0);
+                setLives(3);
+                setWrongGuesses([]);
+                setShowSuccess(false);
+            };
+
+            useEffect(() => {
+                if (gameState === 'playing' && !showSuccess) {
+                     const timer = setTimeout(() => playAudio(), 500);
+                     return () => clearTimeout(timer);
+                }
+            }, [currentQIndex, gameState]);
+
+            const handleOptionClick = (index) => {
+                if (showSuccess || wrongGuesses.includes(index) || gameState !== 'playing') return;
+                
+                const currentQ = GAME_DATA[currentQIndex];
+
+                if (index === currentQ.correctIndex) {
+                    playCorrectSound();
+                    setShowSuccess(true);
+                    
+                    // Auto-advance
+                    setTimeout(() => {
+                        if (currentQIndex < GAME_DATA.length - 1) {
+                            setCurrentQIndex(q => q + 1);
+                            setWrongGuesses([]);
+                            setShowSuccess(false);
+                        } else {
+                            setGameState('won');
+                        }
+                    }, 1500);
+                } else {
+                    playWrongSound();
+                    setWrongGuesses(prev => [...prev, index]);
+                    
+                    if (lives > 1) {
+                        setLives(l => l - 1);
+                    } else {
+                        setLives(0);
+                        setTimeout(() => setGameState('gameover'), 500);
+                    }
+                }
+            };
+
+            if (gameState === 'start' || gameState === 'gameover' || gameState === 'won') {
+                return (
+                    <div className="flex-1 w-full bg-white rounded-3xl shadow-xl flex flex-col items-center justify-center p-6 text-center transform transition-all h-full">
+                        {gameState === 'start' && (
+                            <div className="w-20 h-20 bg-blue-100 text-blue-500 rounded-full flex items-center justify-center mb-6">
+                                <svg className="w-10 h-10" fill="currentColor" viewBox="0 0 24 24"><path d="M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"/></svg>
+                            </div>
+                        )}
+                        {gameState === 'gameover' && (
+                            <div className="w-20 h-20 bg-red-100 text-red-500 rounded-full flex items-center justify-center mb-6">
+                                <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                            </div>
+                        )}
+                        {gameState === 'won' && (
+                            <div className="w-20 h-20 bg-green-100 text-green-500 rounded-full flex items-center justify-center mb-6">
+                                <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                            </div>
+                        )}
+
+                        <h1 className="text-4xl sm:text-5xl font-bold text-gray-800 mb-4">
+                            {gameState === 'start' && <>Mini Game A:<br/><span className="text-blue-600">Who is it?</span></>}
+                            {gameState === 'gameover' && <span className="text-red-600">Game Over</span>}
+                            {gameState === 'won' && <span className="text-green-600">You Won!</span>}
+                        </h1>
+                        
+                        <p className="text-gray-500 mb-8 text-lg sm:text-xl max-w-sm">
+                            {gameState === 'start' && "Listen to the description and pick the correct picture. 3 strikes and you're out!"}
+                            {gameState === 'gameover' && "You ran out of lives. Better luck next time!"}
+                            {gameState === 'won' && "Perfect listening skills! You beat the game."}
+                        </p>
+                        
+                        <button 
+                            onClick={handleStart}
+                            className="hover-bounce w-full max-w-xs bg-blue-500 hover:bg-blue-600 text-white font-bold py-4 px-8 rounded-full text-xl shadow-lg transition-colors focus:outline-none focus:ring-4 focus:ring-blue-300"
+                        >
+                            {gameState === 'start' ? 'Start Game' : 'Play Again'}
+                        </button>
+                    </div>
+                );
+            }
+
+            // Playing State
+            const currentQ = GAME_DATA[currentQIndex];
+            const GraphicComponent = Graphics[currentQ.type];
+
+            return (
+                <div className="w-full h-full bg-white rounded-3xl shadow-xl overflow-hidden flex flex-col relative">
+                    
+                    {/* Success Overlay */}
+                    <div className={`absolute inset-0 z-20 pointer-events-none transition-opacity duration-300 flex items-center justify-center bg-green-500/20 backdrop-blur-sm ${showSuccess ? 'opacity-100' : 'opacity-0'}`}>
+                        <div className="bg-white p-6 rounded-full shadow-2xl scale-150 transform transition-transform duration-300">
+                            <svg className="w-16 h-16 text-green-500" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd"/></svg>
+                        </div>
+                    </div>
+
+                    {/* Header (Lives & Progress) */}
+                    <div className="bg-blue-50 p-3 sm:p-4 flex justify-between items-center border-b border-blue-100 shrink-0">
+                        <span className="text-blue-600 font-bold text-sm sm:text-base bg-blue-100 py-1 px-3 rounded-full">
+                            {currentQIndex + 1} / {GAME_DATA.length}
+                        </span>
+                        <div className="flex space-x-1">
+                            {[...Array(3)].map((_, i) => (
+                                <svg key={i} className={`w-6 h-6 sm:w-8 sm:h-8 transition-colors duration-300 ${i < lives ? 'text-red-500' : 'text-gray-300'}`} fill="currentColor" viewBox="0 0 20 20">
+                                    <path fillRule="evenodd" d="M3.172 5.172a4 4 0 015.656 0L10 6.343l1.172-1.171a4 4 0 115.656 5.656L10 17.657l-6.828-6.829a4 4 0 010-5.656z" clipRule="evenodd" />
+                                </svg>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* Audio Player Area */}
+                    <div className="shrink-0 py-4 sm:py-6 flex flex-col items-center justify-center bg-gray-50 border-b border-gray-100">
+                        <button 
+                            onClick={playAudio}
+                            disabled={isLoadingAudio || showSuccess}
+                            className={`relative group rounded-full p-4 sm:p-5 text-white transition-all transform hover:scale-105 shadow-xl outline-none focus:ring-4 focus:ring-blue-300 ${isAudioPlaying ? 'bg-green-500' : 'bg-blue-500 hover:bg-blue-600'}`}
+                        >
+                            {isAudioPlaying && <div className="absolute inset-0 rounded-full bg-green-400 opacity-75 pulse-ring"></div>}
+                            
+                            {isLoadingAudio ? (
+                                <svg className="animate-spin w-10 h-10 sm:w-12 sm:h-12 text-white relative z-10" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                            ) : (
+                                <svg className="w-10 h-10 sm:w-12 sm:h-12 relative z-10" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
+                                </svg>
+                            )}
+                        </button>
+                    </div>
+
+                    {/* Options Grid (Fills remaining space) */}
+                    <div className="flex-1 min-h-0 p-3 sm:p-5">
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-5 h-full">
+                            {currentQ.options.map((variant, idx) => {
+                                const isWrong = wrongGuesses.includes(idx);
+                                const isCorrect = showSuccess && idx === currentQ.correctIndex;
+                                
+                                let buttonClass = "bg-gray-50 border-4 border-transparent hover:border-blue-300 hover:bg-blue-50 hover:-translate-y-1 shadow-sm hover:shadow-md";
+                                
+                                if (isWrong) {
+                                    buttonClass = "border-4 border-red-400 bg-red-50 opacity-60 cursor-not-allowed shake";
+                                } else if (isCorrect) {
+                                    buttonClass = "border-4 border-green-500 bg-green-50 scale-105 z-10 shadow-lg";
+                                }
+
+                                return (
+                                    <button 
+                                        key={idx}
+                                        onClick={() => handleOptionClick(idx)}
+                                        disabled={isWrong || showSuccess}
+                                        className={`relative w-full h-full rounded-2xl flex items-center justify-center p-2 sm:p-4 transition-all duration-300 ${buttonClass}`}
+                                    >
+                                        <div className="w-full h-full max-h-[150px] md:max-h-[250px] flex items-center justify-center">
+                                            <GraphicComponent variant={variant} />
+                                        </div>
+                                        
+                                        {isWrong && (
+                                            <div className="absolute inset-0 flex items-center justify-center bg-white/40 rounded-xl">
+                                                <svg className="w-16 h-16 text-red-500 drop-shadow-md" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M6 18L18 6M6 6l12 12"></path></svg>
+                                            </div>
+                                        )}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
